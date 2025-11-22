@@ -9,6 +9,20 @@ import (
 	"strings"
 )
 
+
+type UserService interface {
+	Register(name, password string, balance int) error
+	Login(name, password string) error
+	Logout()
+	GetCurrentUser() *User
+}
+
+type TransferService interface {
+	Transfer(toName string, amount int) error
+	GetTransfersForUser(userName string) []Transfer
+	PrintAllOtherUsers(currentUserName string)
+}
+
 type User struct {
 	ID       int
 	Name     string
@@ -29,22 +43,6 @@ type System struct {
 	nextID      int
 }
 
-func NewSystem() *System {
-	return &System{
-		users:     make(map[int]*User),
-		transfers: []Transfer{},
-		nextID:    1,
-	}
-}
-
-func (s *System) findUserByName(name string) *User {
-	for _, u := range s.users {
-		if u.Name == name {
-			return u
-		}
-	}
-	return nil
-}
 
 func (s *System) Register(name, password string, balance int) error {
 	if name == "" || password == "" {
@@ -53,8 +51,10 @@ func (s *System) Register(name, password string, balance int) error {
 	if balance < 0 {
 		return errors.New("баланс не может быть отрицательным")
 	}
-	if s.findUserByName(name) != nil {
-		return errors.New("пользователь с таким именем уже существует")
+	for _, u := range s.users {
+		if u.Name == name {
+			return errors.New("пользователь с таким именем уже существует")
+		}
 	}
 
 	s.users[s.nextID] = &User{
@@ -68,20 +68,26 @@ func (s *System) Register(name, password string, balance int) error {
 }
 
 func (s *System) Login(name, password string) error {
-	user := s.findUserByName(name)
-	if user == nil {
-		return errors.New("пользователь не найден")
+	for _, u := range s.users {
+		if u.Name == name {
+			if u.Password == password {
+				s.currentUser = u
+				return nil
+			}
+			return errors.New("неверный пароль")
+		}
 	}
-	if user.Password != password {
-		return errors.New("неверный пароль")
-	}
-	s.currentUser = user
-	return nil
+	return errors.New("пользователь не найден")
 }
 
 func (s *System) Logout() {
 	s.currentUser = nil
 }
+
+func (s *System) GetCurrentUser() *User {
+	return s.currentUser
+}
+
 
 func (s *System) Transfer(toName string, amount int) error {
 	if s.currentUser == nil {
@@ -94,7 +100,13 @@ func (s *System) Transfer(toName string, amount int) error {
 		return errors.New("нельзя переводить самому себе")
 	}
 
-	toUser := s.findUserByName(toName)
+	var toUser *User
+	for _, u := range s.users {
+		if u.Name == toName {
+			toUser = u
+			break
+		}
+	}
 	if toUser == nil {
 		return errors.New("получатель не найден")
 	}
@@ -113,46 +125,30 @@ func (s *System) Transfer(toName string, amount int) error {
 	return nil
 }
 
-func (s *System) PrintAllUsers() {
-	if len(s.users) == 0 {
-		fmt.Println("Нет пользователей.")
-		return
-	}
-	fmt.Println("\nДоступные пользователи:")
-	for _, u := range s.users {
-		if s.currentUser != nil && u.ID == s.currentUser.ID {
-			continue
-		}
-		fmt.Printf("  %s (баланс: %d)\n", u.Name, u.Balance)
-	}
-}
-
-func (s *System) PrintUserTransfers(userName string) {
-	var userTransfers []Transfer
+func (s *System) GetTransfersForUser(userName string) []Transfer {
+	var result []Transfer
 	for _, t := range s.transfers {
 		if t.FromName == userName || t.ToName == userName {
-			userTransfers = append(userTransfers, t)
+			result = append(result, t)
 		}
 	}
+	return result
+}
 
-	if len(userTransfers) == 0 {
-		fmt.Println("У вас пока нет переводов.")
-		return
-	}
-
-	fmt.Println("\nВаши переводы:")
-	for _, t := range userTransfers {
-		if t.FromName == userName {
-			fmt.Printf("  Вы -> %s: %d\n", t.ToName, t.Amount)
-		} else {
-			fmt.Printf("  %s -> Вам: %d\n", t.FromName, t.Amount)
+func (s *System) PrintAllOtherUsers(currentUserName string) {
+	fmt.Println("\nДоступные пользователи:")
+	otherExists := false
+	for _, u := range s.users {
+		if u.Name != currentUserName {
+			fmt.Printf("  %s (баланс: %d)\n", u.Name, u.Balance)
+			otherExists = true
 		}
+	}
+	if !otherExists {
+		fmt.Println("Нет других пользователей.")
 	}
 }
 
-func (s *System) PrintBalances() {
-	fmt.Printf("\nВаш баланс: %d\n", s.currentUser.Balance)
-}
 
 func readLine(prompt string) string {
 	fmt.Print(prompt)
@@ -165,19 +161,30 @@ func parseInt(s string) (int, error) {
 	return strconv.Atoi(s)
 }
 
+
 func main() {
-	sys := NewSystem()
+	sys := &System{
+		users:     make(map[int]*User),
+		transfers: []Transfer{},
+		nextID:    1,
+	}
+
+	var userService UserService = sys
+	var transferService TransferService = sys
+
 	reader := bufio.NewReader(os.Stdin)
 	end := false
+
 	for {
 		fmt.Println("\n--- Система переводов ---")
-		if sys.currentUser != nil {
-			fmt.Printf("Вы вошли как: %s\n", sys.currentUser.Name)
+		currentUser := sys.GetCurrentUser()
+		if currentUser != nil {
+			fmt.Printf("Вы вошли как: %s\n", currentUser.Name)
 		} else {
 			fmt.Println("Вы не вошли в аккаунт.")
 		}
 
-		if sys.currentUser != nil {
+		if currentUser != nil {
 			fmt.Print(`1. Перевести деньги
 2. Мой баланс
 3. История переводов
@@ -194,14 +201,10 @@ func main() {
 		choice, _ := reader.ReadString('\n')
 		choice = strings.TrimSpace(choice)
 
-		if sys.currentUser != nil {
+		if currentUser != nil {
 			switch choice {
 			case "1":
-				sys.PrintAllUsers()
-				if len(sys.users) <= 1 {
-					fmt.Println("Некому переводить.")
-					continue
-				}
+				transferService.PrintAllOtherUsers(currentUser.Name)
 				toName := readLine("Кому перевести? (имя): ")
 				amtStr := readLine("Сумма (целое число): ")
 				amount, err := parseInt(amtStr)
@@ -209,20 +212,32 @@ func main() {
 					fmt.Println("Некорректная сумма (должно быть целое число)")
 					continue
 				}
-				if err := sys.Transfer(toName, amount); err != nil {
+				if err := transferService.Transfer(toName, amount); err != nil {
 					fmt.Printf("Ошибка: %v\n", err)
 				} else {
 					fmt.Println("Перевод выполнен!")
 				}
 
 			case "2":
-				sys.PrintBalances()
+				fmt.Printf("\nВаш баланс: %d\n", currentUser.Balance)
 
 			case "3":
-				sys.PrintUserTransfers(sys.currentUser.Name)
+				transfers := transferService.GetTransfersForUser(currentUser.Name)
+				if len(transfers) == 0 {
+					fmt.Println("У вас пока нет переводов.")
+				} else {
+					fmt.Println("\nВаши переводы:")
+					for _, t := range transfers {
+						if t.FromName == currentUser.Name {
+							fmt.Printf("  Вы -> %s: %d\n", t.ToName, t.Amount)
+						} else {
+							fmt.Printf("  %s -> Вам: %d\n", t.FromName, t.Amount)
+						}
+					}
+				}
 
 			case "4":
-				sys.Logout()
+				userService.Logout()
 				fmt.Println("Вы вышли из аккаунта.")
 
 			case "5":
@@ -243,8 +258,8 @@ func main() {
 					fmt.Println("Некорректный баланс (должен быть целым числом)")
 					continue
 				}
-				if err := sys.Register(name, pass, bal); err != nil {
-					fmt.Print("Ошибка: ", err)
+				if err := userService.Register(name, pass, bal); err != nil {
+					fmt.Println("Ошибка:", err)
 				} else {
 					fmt.Println("Регистрация успешна!")
 				}
@@ -252,8 +267,8 @@ func main() {
 			case "2":
 				name := readLine("Имя: ")
 				pass := readLine("Пароль: ")
-				if err := sys.Login(name, pass); err != nil {
-					fmt.Print("Ошибка: ", err)
+				if err := userService.Login(name, pass); err != nil {
+					fmt.Println("Ошибка:", err)
 				} else {
 					fmt.Println("Добро пожаловать!")
 				}
@@ -266,6 +281,7 @@ func main() {
 				fmt.Println("Неверный выбор.")
 			}
 		}
+
 		if end {
 			break
 		}
